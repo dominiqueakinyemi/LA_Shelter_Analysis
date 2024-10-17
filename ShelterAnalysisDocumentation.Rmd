@@ -1,0 +1,1176 @@
+---
+title: "LA County Shelter Analysis"
+author: "Dominique Akinyemi"
+date: "2024-10-01"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE)
+options(repos = c(CRAN = "https://cran.studio.com"))
+```
+
+# **Improving Outcomes for High-Risk Dog Breeds in Los Angeles County Shelters**
+
+## **Project Overview**
+
+Los Angeles County animal shelters are over capacity. At the time of this project, they are 180% over capacity. This project will analyze shelter data to identify which dog breeds contribute most to overpopulation and have the lowest adoption rates, longest stays, or highest risk of euthanasia.
+
+The goal is to use this analysis to develop actionable strategies for increasing adoption rates and reducing shelter overpopulation.
+
+### **Skills**
+
+-   Data cleaning
+
+-   Exploratory data analysis
+
+-   Trend analysis
+
+-   Data visualization
+
+### Tools
+
+-   R
+
+## Data Sources
+
+For this project, I used the "Animal Care PawStats Data" provided by Los Angeles County on their open data website. The data set can be accessed [here](https://data.lacounty.gov/datasets/lacounty::animal-care-pawstats-data/about).
+
+The data is frequently updated and maintained, with the most recent update being September 3, 2024 (as of the project date). It includes over 300,000 records (including all animal types).
+
+The data set includes the following attributes for each intake entry: facility, animal ID, animal type, animal breed, impound no, admission fiscal year, intake type, intake group, outcome fiscal year, outcome type, outcome group, intake date, and outcome date.
+
+## Data Cleaning and Preparation
+
+To prepare for cleaning and analysis, I installed and loaded the following R packages:
+
+```{r}
+install.packages(c("tidyverse", "lubridate", "janitor", "skimr"))
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(skimr)
+```
+
+And imported the data set.
+
+```{r}
+shelter_animals <- read_csv("/./Volumes/X9 Pro/Shelter Analysis v2/Animal_Care_PawStats_Data.csv")
+```
+
+Then, I performed the following cleaning tasks:
+
+1.  Removed cats and other types of animals from data set. It now contains 142,201 dogs.
+
+```{r}
+ shelter_dogs <- shelter_animals[shelter_animals$ANIMAL_GROUP == "DOGS", ]
+```
+
+2.  Standardized capitalization of column names and data entries (to lowercase).
+
+```{r}
+shelter_dogs <- shelter_dogs %>% 
+  mutate(across(where(is.character), tolower))
+colnames(shelter_dogs) <- tolower(colnames(shelter_dogs))
+```
+
+3.  Removed redundant columns.
+    -   animal_group: no longer needed as the only data left in this column is dogs.
+
+    -   intake_fiscal_year, outcome_fiscal_year: information needed already contained in date columns.
+
+    -   objectid: not needed as rows are numbered.
+
+```{r}
+shelter_dogs <- shelter_dogs %>%
+  select(-intake_fiscal_year, -outcome_fiscal_year, -objectid)
+```
+
+4.  Changed data column types from character to date (removing time).
+
+```{r}
+shelter_dogs$intake_date <- as.Date(shelter_dogs$intake_date)
+shelter_dogs$outcome_date <- as.Date(shelter_dogs$outcome_date)
+```
+
+5.  Summarized data to identify further cleaning needed.
+
+```{r}
+skim(shelter_dogs)
+```
+
+6.  Investigated and resolved 1,034 missing values in outcome\_ date column. Removed unknown outcomes and outcome types.
+
+```{r}
+shelter_dogs <- shelter_dogs %>%
+  filter(!is.na(outcome_date) & outcome_type != "unk9999999")
+```
+
+7.  Investigated and resolved missing values in intake_type_group and outcome_type_group columns.
+    -   After inspecting these columns and comparing them to the intake_type and outcome_type columns, I found they were redundant groupings for intake/outcome classifications. I removed these columns from the data.
+
+```{r}
+shelter_dogs <- shelter_dogs %>% 
+  select(-intake_type_group, -outcome_type_group)
+```
+
+8.  Confirmed that there were no longer any missing values from columns.
+
+```{r}
+skim(shelter_dogs)
+```
+
+9.  Standardized names in intake_type and outcome_type columns.
+
+```{r standardizing types, cache=TRUE}
+shelter_dogs <- shelter_dogs %>% 
+  mutate(
+    intake_type = recode(intake_type,
+                         "dispo req" = "disposal_required",
+                         "emer evac" = "emergency_evacuation",
+                         "owner sur" = "owner_surrender",
+                         "return" = "returned_to_shelter",
+                         "pd request" = "police_dept_request",
+                         "owner died" = "owner_died",
+                         "hospitaliz" = "owner_hospitalized",
+                         "trans_int" = "internal_transfer",
+                         "arrested" = "owner_arrested",
+                         "confiscate" = "confiscated",
+                         "ani-safe" = "animal_safety",
+                         "cola hi" = "cola_hi_program",
+                         "bornincare" = "born_in_care",
+                         "finder" = "found",
+                         "court case" = "court_case",
+                         "danger dog" = "danger_dog",
+                         "sn board" = "spay_neuter_board",
+                         "trans_ext" = "external_transfer",
+                         "cool cen" = "cooling_center"
+    ),
+    outcome_type = recode(outcome_type,
+                         "rto micro" = "returned_to_owner",
+                         "rto" = "returned_to_owner",
+                         "dead" = "deceased_on_arrival",
+                         "disposal" = "deceased_on_arrival",
+                         "euth" = "euthanized",
+                         "adoption" = "adopted",
+                         "rto fldmic" = "returned_to_owner",
+                         "foster" = "fostered",
+                         "died" = "died_in_care",
+                         "rto fld id" = "returned_to_owner",
+                         "close2home" = "rescue",
+                         "rtn" = "returned_to_owner",
+                         "trans_int" = "internal_tranfer",
+                         "trans_ext" = "external_transfer",
+                         "rtc" = "returned_to_owner",
+                         "aspcapw" = "rescue",
+                         "aspcatrans" = "rescue",
+                         "cool cen" = "cooling_center"
+    )
+  )
+```
+
+10. Removed dogs already deceased upon intake, and those whose stays were transient/temporary.
+
+```{r}
+shelter_dogs <- shelter_dogs %>%
+  filter(!intake_type %in% c("disposal_required", "animal_safety", "cola_hi_program", "danger_dog", "spay_neuter_board"))
+shelter_dogs <- filter(shelter_dogs, outcome_type != "deceased_on_arrival")
+```
+
+11. Investigated date discrepancies to find errors.
+    -   Skimr tibble shows min intake date is from 2010 and min outcome date is from 2007. Looking at the data set, these are obvious errors, so I will remove the entries.
+
+```{r}
+shelter_dogs <- shelter_dogs[!(shelter_dogs$outcome_date < shelter_dogs$intake_date), ]
+shelter_dogs <- shelter_dogs %>%
+  filter(intake_date != as.Date("2010-10-21"))
+```
+
+12. Compared animal_id and impound_no to resolve duplicates.
+    -   There are 124,973 unique animal_ids and 141,159 unique impound_no out of 141,159 total data entries. This confirms there are no duplicate values in the impound_no column, but there are duplicate animal_ids.
+
+    -   All of the repeated animal_ids have the same primary_breed but different dates, so I can confirm that they are multiple shelter intakes rather than duplicate animal_ids.
+
+```{r}
+repeated_animal_ids <- shelter_dogs %>% 
+  group_by(animal_id) %>%
+  filter(n() > 1) %>%
+  ungroup()
+```
+
+13. Standardized breed names through mapping.
+
+-   I used American Kennel Club's official list as a reference but occasionally chose other breed names that are commonly used or are regionally/internationally recognized.
+
+```{r}
+unique_breeds <- unique(shelter_dogs$primary_breed)
+print(unique_breeds)
+```
+
+```{r breed mapping, cache=TRUE}
+breed_mapping <- tibble(
+  original_breed = c("chihuahua sh","staffordshire","min pinscher","lhasa apso","labrador retr","collie smooth","amer eskimo","maltese","poodle min","parson russ ter","germ shepherd", "shih tzu","border collie","pointer","rhod ridgeback","aust shepherd","shiba inu","terrier","pit bull","rottweiler","mastiff","cocker span","cairn terrier","beagle","dachshund lh","chihuahua lh","golden retr","norfolk terrier","pug","boxer","eng bulldog","plott hound","aust cattle dog","jack russ terr","dachshund","bichon frise","siberian husky","cavalier span","eng sprngr span","anatol shepherd","boston terrier","chinese crested","rat terrier","oldeng sheepdog","chow chow","cane corso","amer bulldog","yorkshire terr","alask malamute","schnauzer giant","american staff","havanese","border terrier","schnauzer min","germ sh point","old eng bulldog","whippet","welsh corgi pem","poodle stnd","catahoula","basenji","doberman pinsch","silky terrier","pomeranian","chinese sharpei","great pyrenees", "manchester terr","basset hound","great dane","french bulldog","queensland heel","pekingese", "neapolitan mast", "bull terrier", "flat coat retr", "fila", "munsterlander", "keeshond", "tibetan mastiff","alaskan husky","west highland","aust kelpie","dachshund wh","am pit bull ter","papillon","schnauzer stand","eng foxhound","poodle toy","toy fox terrier","akita","eng setter","tibetan span","tibetan terr","eng coonhound","eng toy spaniel","belg malinois","st bernard rgh","wheaten terr","bruss griffon","fox terr wire","dutch shepherd","dogo argentino","bernese mtn dog","schipperke","welsh terrier","lowchen","shetld sheepdog","samoyed","carolina dog","boerboel","jindo","welsh corgi car","aust terrier","mex hairless","vizsla","weimaraner","ns duck tolling","greyhound","norw elkhound","bulldog","dalmatian","tenn tr brindle","amer foxhound","pharaoh hound","irish wolfhound","dogue de bordx","eng pointer","alask klee kai","airedale terr","canaan dog","bullmastiff","armenian gampr","black/tan hound","redbone hound","ital greyhound","black mouth cur","clumber span","bloodhound","newfoundland","bluetick hound","scot terrier","tr walker hound","port water dog","wolf hybrid","patterdale terr","irish terrier","brittany","american bully","bearded collie"  ,   "spaniel", "shepherd", "eng cocker span","st bernard smth","welsh spr span","skye terrier", "bouv flandres","collie rough","belg tervuren","leonberger","span water dog","boykin span", "bull terr min","spinone ital","germ wh point","presa canario","chesa bay retr","landseer", "japanese chin","picardy sheepdg","field spaniel","coton de tulear","belg sheepdog","podengo pequeno","sussex span","formosan mtn","fox terr smooth", "german pinscher","saluki", "finnish spitz","irish setter","swiss hound", "karelian bear","affenpinscher","kangal","komondor","dutch sheepdog","puli","norwich terrier","caucasian mountain","entlebucher","dandie dinmont","otterhound","harrier","afghan hound","ibizan hound","eskimo","briard","treeing cur","akbash","gr swiss mtn","hovawart","lakeland terr","blue lacy","norw buhund","eng shepherd", "sealyham terr","glen of imaal","swed vallhund", "beauceron","maremma sheepdg","pbgv","polish lowland","kuvasz","tosa","curlycoat retr","eurasier"),
+
+  standardized_breed = c("chihuahua","bull_terrier","miniature_pinscher","lhasa_apso","labrador_retriever","collie","american_eskimo","maltese","miniature_poodle","parson_russell_terrier","german_shepherd","shih_tzu","border_collie","pointer","rhodesian_ridgeback","australian_shepherd","shiba_inu","terrier","bull_terrier","rottweiler","mastiff","cocker_spaniel","cairn_terrier","beagle","dachshund","chihuahua","golden_retriever","norfolk_terrier","pug","boxer","bulldog","plott_hound","australian_cattle_dog","russell_terrier","dachshund","bichon_frise","siberian_husky","cavalier_king_charles_spaniel","english_springer_spaniel","anatolian_shepherd","boston_terrier","chinese_crested","rat_terrier","old_english_sheepdog","chow_chow","cane_corso","bulldog","yorkshire_terrier","alaskan_malamute","giant_schnauzer","bull_terrier","havanese","border_terrier","miniature_schnauzer","german_shorthaired_pointer","bulldog","whippet","pembroke_welsh_corgi","standard_poodle","catahoula_leopard_dog","basenji","doberman_pinscher","silky_terrier","pomeranian","chinese_sharpei","great_pyrenees","manchester_terrier","basset_hound","great_dane","bulldog","australian_cattle_dog","pekingese","neapolitan_mastiff","bull_terrier","flat_coated_retriever","brazilian_mastiff","munsterlander","keeshond","tibetan_mastiff","siberian_husky","west_highland_white_terrier","australian_kelpie","dachshund","bull_terrier","papillon","standard_schnauzer","english_foxhound","toy_poodle","toy_fox_terrier","akita","english_setter","tibetan_spaniel","tibetan_terrier","english_coonhound","english_toy_spaniel","belgian_malinois","saint_bernard","wheaten_terrier","brussels_griffon","wire_fox_terrier","dutch_shepherd","dogo_argentino","bernese_mountain_dog","schipperke","welsh_terrier","lowchen","shetland_sheepdog","samoyed","carolina_dog","boerboel","korean_jindo","cardigan_welsh_corgi","australian_terrier","xoloitzcuintli","vizsla","weimaraner","nova_scotia_duck_tolling_retriever","greyhound","norwegian_elkhound","bulldog","dalmatian","treeing_tennessee_brindle","american_foxhound","pharaoh_hound","irish_wolfhound","dogue_de_bordeaux","english_pointer","alaskan_klee_kai","airedale_terrier","canaan_dog","bullmastiff","armenian_gampr","black_and_tan_coonhound","redbone_coonhound","italian_greyhound","black_mouth_cur","clumber_spaniel","bloodhound","newfoundland","bluetick_coonhound","scottish_terrier","treeing_walker_coonhound","portuguese_water_dog","wolfdog","patterdale_terrier","irish_terrier","brittany","bull_terrier","bearded_collie", "spaniel","shepherd","english_cocker_spaniel","saint_bernard","welsh_springer_spaniel","skye_terrier","bouvier_des_flandres","collie","belgian_tervuren","leonberger","irish_water_spaniel","boykin_spaniel","miniature_bull_terrier","spinone_italiano","german_wirehaired_pointer","presa_canario","chesapeake_bay_retriever","newfoundland","japanese_chin","berger_picard","field_spaniel","coton_de_tulear","belgian_sheepdog","portuguese_podengo_pequeno","sussex_spaniel","taiwan_dog","smooth_fox_terrier","german_pinscher","saluki","finnish_spitz","irish_setter","swiss_hound","karelian_bear_dog","affenpinscher","kangal_shepherd","komondor","dutch_shepherd","puli","norwich_terrier","caucasian_shepherd","entlebucher_mountain_dog","dandie_dinmont_terrier","otterhound","harrier","afghan_hound","ibizan_hound","american_eskimo","briard","treeing_cur","akbash","greater_swiss_mountain_dog","hovawart","lakeland_terrier","blue_lacy","norwegian_buhund","english_shepherd","sealyham_terrier","glen_of_imaal_terrier","swedish_vallhund_dog","beauceron","maremma_sheepdog","petit_basset_griffon_vendeen","polish_lowland_sheepdog","kuvasz","tosa","curly_coated_retriever", "eurasier")
+)
+```
+
+```{r}
+shelter_dogs <- shelter_dogs %>%
+  left_join(breed_mapping, by = c("primary_breed" = "original_breed")) %>%
+  mutate(primary_breed = coalesce(standardized_breed, primary_breed)) %>%
+  select(-standardized_breed)
+```
+
+```{r}
+unique_breeds <- unique(shelter_dogs$primary_breed)
+```
+
+14. Organized unique breeds and counts in a data frame.
+
+```{r}
+unique_breeds <- data.frame(primary_breed = unique_breeds, stringsAsFactors = FALSE)
+unique_breeds <- shelter_dogs %>%
+  count(primary_breed, name = "counts") %>%
+  arrange(desc(counts))
+```
+
+15. Backed up cleaned data set in a CSV file before beginning analysis.
+
+```{r}
+write.csv(shelter_dogs, file = "/./Volumes/X9 Pro/Shelter Analysis v2/shelter_dogs.csv", row.names = FALSE)
+```
+
+## Exploratory Analysis of Shelter Data Set
+
+To begin my analysis, I answered the following questions to get an overview of the data.
+
+*Which breeds have the largest populations in shelters?*
+
+```{r}
+head(unique_breeds, 10)
+```
+
+### Intake and Outcome Types
+
+*What are the most common intake reasons?*
+
+```{r}
+intake_types <- shelter_dogs %>%
+  group_by(intake_type) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+head(intake_types, 5)
+```
+
+Note: After strays, dogs surrendered by their owners are the most common intakes in shelters. Why are so many owners surrendering their dogs?
+
+*What are the most common outcomes?*
+
+```{r}
+outcome_types <- shelter_dogs %>%
+  group_by(outcome_type) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+head(outcome_types, 5)
+```
+
+### Outcome Rates
+
+*What percentage of dogs were adopted?*
+
+```{r}
+adoption_rate <- (sum(shelter_dogs$outcome_type == "adopted") / nrow(shelter_dogs)) * 100
+print(adoption_rate)
+```
+
+*What percentage of dogs were euthanized?*
+
+```{r}
+euthanasia_rate <- (sum(shelter_dogs$outcome_type == "euthanized") / nrow(shelter_dogs)) * 100
+print(euthanasia_rate)
+```
+
+*What percentage of dogs were sent to rescues?*
+
+```{r}
+rescue_rate <- (sum(shelter_dogs$outcome_type == "rescue") / nrow(shelter_dogs)) * 100
+print(rescue_rate)
+```
+
+*What percentage of dogs were returned to owner?*
+
+```{r}
+returned_to_owner_rate <- (sum(shelter_dogs$outcome_type == "returned_to_owner") / nrow(shelter_dogs)) * 100
+print(returned_to_owner_rate)
+```
+
+### Rates By Breed
+
+*Adoption rates by breed?*
+
+```{r}
+breed_adoption_rates <- aggregate(outcome_type ~ primary_breed, data = shelter_dogs,
+                                  function(x) mean(x == "adopted") * 100)
+names(breed_adoption_rates)[names(breed_adoption_rates) == "outcome_type"] <- "adoption_rate"
+```
+
+*Euthanasia rates by breed?*
+
+```{r}
+breed_euthanasia_rates <- aggregate(outcome_type ~ primary_breed, data = shelter_dogs,
+                                  function(x) mean(x == "euthanized") * 100)
+breed_euthanasia_rates <- breed_euthanasia_rates %>%
+  rename(euthanasia_rate = outcome_type)
+```
+
+*Rescue rates by breed?*
+
+```{r}
+breed_rescue_rates <- aggregate(outcome_type ~ primary_breed, data = shelter_dogs,
+                                  function(x) mean(x == "rescue") * 100)
+breed_rescue_rates <- breed_rescue_rates %>%
+  rename(rescue_rate = outcome_type)
+```
+
+*What are the returned to owner rates by breed?*
+
+```{r}
+breed_returned_rates <- aggregate(outcome_type ~ primary_breed, data = shelter_dogs,
+                                  function(x) mean(x == "returned_to_owner") * 100)
+breed_returned_rates <- breed_returned_rates %>%
+  rename(returned_to_owner_rate = outcome_type)
+```
+
+I combined the rates for the top 5 outcome types along with breed counts into one tibble.
+
+```{r}
+unique_breeds <- unique_breeds %>%
+  left_join(breed_adoption_rates, by = "primary_breed") %>%
+  left_join(breed_euthanasia_rates, by = "primary_breed") %>% 
+  left_join(breed_rescue_rates, by = "primary_breed") %>% 
+  left_join(breed_returned_rates, by = "primary_breed")
+head(unique_breeds, 5)
+```
+
+### Length of Stay
+
+*Average number of days in shelter?*
+
+```{r}
+shelter_dogs$stay_length <- as.numeric(difftime(shelter_dogs$outcome_date, shelter_dogs$intake_date, units = "days"))
+
+average_stay <- mean(shelter_dogs$stay_length)
+round(average_stay)
+```
+
+*Average per breed?*
+
+```{r}
+breed_average_stay <- shelter_dogs %>%
+  group_by(primary_breed) %>%
+  summarise(average_stay = mean(stay_length)) %>% 
+  arrange(desc(average_stay))
+head(breed_average_stay)
+```
+
+```{r}
+unique_breeds <- unique_breeds %>%
+  left_join(breed_average_stay, by = "primary_breed")
+```
+
+```{r}
+unique_breeds <- unique_breeds %>%
+  mutate(average_stay = round(average_stay))
+```
+
+## Trends Over Time
+
+First, I created month/year columns
+
+```{r}
+shelter_dogs <- shelter_dogs %>%
+  mutate(
+    intake_month = month(intake_date, label = TRUE, abbr = TRUE),
+    outcome_month = month(outcome_date, label = TRUE, abbr = TRUE),
+    intake_year = year(intake_date),
+    outcome_year = year(outcome_date)
+  )
+```
+
+```{r}
+shelter_dogs <- shelter_dogs %>%
+  mutate(
+    intake_month_year = format(as.Date(intake_date), "%m-%Y"),
+    outcome_month_year = format(as.Date(outcome_date), "%m-%Y")
+  )
+```
+
+### Intakes
+
+*How many intakes have occurred per year?*
+
+```{r}
+yearly_intakes <- shelter_dogs %>%
+  group_by(intake_year) %>%
+  summarise(intake_count = n()) %>% 
+  arrange(intake_year)
+print(yearly_intakes)
+```
+
+I will exclude 2017 and 2024 from yearly analysis due to incomplete data.
+
+```{r}
+yearly_intakes <- yearly_intakes %>%
+  filter(!(intake_year %in% c(2017, 2024)))
+print(yearly_intakes)
+```
+
+*Average yearly intakes?*
+
+```{r}
+average_yearly_intakes <- yearly_intakes %>%
+  summarise(average_intakes = mean(intake_count))
+print(average_yearly_intakes)
+```
+
+*Yearly intakes visualized with a line chart:*
+
+```{r yearly intakes chart, cache=TRUE}
+ggplot(yearly_intakes, aes(x = intake_year, y = intake_count)) +
+  geom_line(color = "blue") +
+  expand_limits(y = 0)
+  labs(title = "Total Intakes per Year", x = "Year", y = "Intake Count") +
+  theme_minimal()
+```
+
+*Visualized with a bar chart:*
+
+```{r yearly intakes bar, cache=TRUE}
+ggplot(yearly_intakes, aes(x = as.factor(intake_year), y = intake_count)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(x = "Year", y = "Intake Count", title = "Intakes by Year") +
+  theme_minimal()
+```
+
+-   Intakes peaked in 2019, normalized in 2020-2021, then increased in following years.
+
+*How many intakes have occurred per month from 2018-2023?*
+
+```{r}
+monthly_intakes <- shelter_dogs %>%
+  group_by(intake_year, intake_month) %>%
+  summarise(intake_count = n())
+monthly_intakes <- monthly_intakes %>%
+  filter(!(intake_year %in% c(2017, 2024)))
+```
+
+*Average monthly intakes?*
+
+```{r}
+average_monthly_intakes <- monthly_intakes %>%
+  ungroup() %>% 
+  summarise(average_intakes = mean(intake_count))
+print(average_monthly_intakes)
+```
+
+*Visualized monthly intakes:*
+
+```{r monthly intakes chart, cache=TRUE}
+ggplot(monthly_intakes, aes(x = intake_month, y = intake_count, group = intake_year)) +
+  geom_line() +
+  facet_wrap(~ intake_year, scales = "free_x") +
+  labs(title = "Monthly Intake Trends from 2018 to 2023", x = "Month", y = "Count")
+```
+
+### Outcomes
+
+First, I counted total outcomes by year.
+
+```{r}
+yearly_outcomes <- shelter_dogs %>%
+  group_by(outcome_year, outcome_type) %>%
+  summarise(outcome_count = n())
+yearly_total_outcomes <- yearly_outcomes %>% 
+  group_by(outcome_year) %>% 
+  summarise(total_outcomes = sum(outcome_count))
+```
+
+Also, excluding 2017 and 2024
+
+```{r}
+yearly_outcomes <- yearly_outcomes %>%
+  filter(!(outcome_year %in% c(2017, 2024)))
+yearly_total_outcomes <- yearly_total_outcomes %>%
+  filter(!(outcome_year %in% c(2017, 2024)))
+```
+
+*How many adoptions occurred each year?*
+
+```{r}
+yearly_adoptions <- yearly_outcomes %>%
+  filter(outcome_type == "adopted") %>%
+  rename(adoption_count = outcome_count) %>% 
+   select(-outcome_type)
+print(yearly_adoptions)
+```
+
+*How many dogs were euthanized each year?*
+
+```{r}
+yearly_euthanasia <- yearly_outcomes %>%
+  filter(outcome_type == "euthanized") %>%
+  rename(euthanasia_count = outcome_count) %>% 
+  select(-outcome_type)
+print(yearly_euthanasia)
+```
+
+*How many dogs were returned to owners each year?*
+
+```{r}
+yearly_returns <- yearly_outcomes %>%
+  filter(outcome_type == "returned_to_owner") %>%
+  rename(return_count = outcome_count) %>% 
+  select(-outcome_type)
+print(yearly_returns)
+```
+
+*How many dogs were sent to rescues each year?*
+
+```{r}
+yearly_rescues <- yearly_outcomes %>%
+  filter(outcome_type == "rescue") %>%
+  rename(rescue_count = outcome_count) %>% 
+  select(-outcome_type)
+print(yearly_rescues)
+```
+
+I combined the counts for each outcome into one table and calculated their rates.
+
+```{r}
+yearly_outcome_rates <- yearly_total_outcomes %>%
+  left_join(yearly_adoptions, by = "outcome_year") %>%
+  left_join(yearly_euthanasia, by = "outcome_year") %>% 
+  left_join(yearly_rescues, by = "outcome_year") %>% 
+  left_join(yearly_returns, by = "outcome_year")
+yearly_outcome_rates <- yearly_outcome_rates %>%
+  mutate(
+    adoption_rate = (adoption_count / total_outcomes) * 100,
+    euthanasia_rate = (euthanasia_count / total_outcomes) * 100,
+    rescue_rate = (rescue_count / total_outcomes) * 100,
+    return_to_owner_rate = (return_count / total_outcomes) * 100
+  ) %>%
+  select(-adoption_count, -euthanasia_count, -rescue_count, -return_count)
+print(yearly_outcome_rates)
+```
+
+*Outcomes by month?*
+
+```{r}
+monthly_outcomes <- shelter_dogs %>%
+  group_by(outcome_month_year, outcome_type) %>%
+  summarise(outcome_count = n())
+monthly_total_outcomes <- monthly_outcomes %>% 
+  group_by(outcome_month_year) %>% 
+  summarise(total_outcomes = sum(outcome_count))
+```
+
+```{r}
+monthly_outcomes <- monthly_outcomes %>%
+  filter(!grepl("2017|2024", outcome_month_year))
+monthly_total_outcomes <- monthly_total_outcomes %>%
+  filter(!grepl("2017|2024", outcome_month_year))
+```
+
+Adoptions by month:
+
+```{r}
+monthly_adoptions <- monthly_outcomes %>%
+  filter(outcome_type == "adopted") %>%
+  rename(adoption_count = outcome_count) %>% 
+   select(-outcome_type)
+```
+
+Euthanasia by month:
+
+```{r}
+monthly_euthanasia <- monthly_outcomes %>%
+  filter(outcome_type == "euthanized") %>%
+  rename(euthanasia_count = outcome_count) %>% 
+   select(-outcome_type)
+```
+
+Returns to owners month:
+
+```{r}
+monthly_returns <- monthly_outcomes %>%
+  filter(outcome_type == "returned_to_owner") %>%
+  rename(return_count = outcome_count) %>% 
+   select(-outcome_type)
+```
+
+Rescues by month:
+
+```{r}
+monthly_rescues <- monthly_outcomes %>%
+  filter(outcome_type == "rescue") %>%
+  rename(rescue_count = outcome_count) %>% 
+   select(-outcome_type)
+```
+
+All outcome rates:
+
+```{r}
+monthly_outcome_rates <- monthly_total_outcomes %>%
+  inner_join(monthly_adoptions, by = c("outcome_month_year")) %>%
+  inner_join(monthly_euthanasia, by = c("outcome_month_year")) %>%
+  inner_join(monthly_returns, by = c("outcome_month_year")) %>%
+  inner_join(monthly_rescues, by = c("outcome_month_year"))
+
+monthly_outcome_rates <- monthly_outcome_rates %>%
+  mutate(
+    adoption_rate = (adoption_count / total_outcomes) * 100,
+    euthanasia_rate = (euthanasia_count / total_outcomes) * 100,
+    rescue_rate = (rescue_count / total_outcomes) * 100,
+    return_to_owner_rate = (return_count / total_outcomes) * 100
+  ) %>%
+  select(-adoption_count, -euthanasia_count, -rescue_count, -return_count)
+print(monthly_outcome_rates)
+```
+
+### Outcome Visualization
+
+Visualized all monthly outcome rates over time:
+
+```{r}
+monthly_outcome_rates$outcome_month_year <- parse_date_time(monthly_outcome_rates$outcome_month_year, "my")
+```
+
+```{r monthly outcome chart, cache=TRUE}
+ggplot(monthly_outcome_rates, aes(x = outcome_month_year)) + 
+  geom_line(aes(y = adoption_rate, color = "Adoption"), linewidth = 1) +
+  geom_line(aes(y = euthanasia_rate, color = "Euthanasia"), linewidth = 1) +
+  geom_line(aes(y = rescue_rate, color = "Rescue"), linewidth = 1) +
+  geom_line(aes(y = return_to_owner_rate, color = "Return to Owner"), linewidth = 1) +
+  scale_color_manual(values = c("Adoption" = "green", "Euthanasia" = "red", "Rescue" = "blue", "Return to Owner" = "orange")) +
+  labs(title = "Monthly Outcome Rates Over Time",
+       x = "Month/Year", y = "Rate (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+Yearly Outcome Rates:
+
+```{r yearly outcome chart, cache=TRUE}
+ggplot(yearly_outcome_rates, aes(x = outcome_year)) + 
+  geom_line(aes(y = adoption_rate, color = "Adoption"), linewidth = 1) +
+  geom_line(aes(y = euthanasia_rate, color = "Euthanasia"), linewidth = 1) +
+  geom_line(aes(y = rescue_rate, color = "Rescue"), linewidth = 1) +
+  geom_line(aes(y = return_to_owner_rate, color = "Return to Owner"), linewidth = 1) +
+  scale_color_manual(values = c("Adoption" = "green", "Euthanasia" = "red", "Rescue" = "blue", "Return to Owner" = "orange")) +
+  labs(title = "Yearly Outcome Rates 2018-2023",
+       x = "Years", y = "Rate (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+## **High-Risk Dog** Breed Analysis
+
+### Pre-Filtering Statistics
+
+```{r breed histogram, cache=TRUE}
+ggplot(unique_breeds, aes(x = counts)) +
+  geom_histogram(binwidth = 10) +
+  labs(title = "Distribution of Breed Counts", x = "Number of Dogs", y = "Frequency")
+```
+
+The data is skewed by a large number of breeds with few instances in the data and a few number of breeds with many instances. The breeds with abnormally large populations will be included under the classification of "high-risk" breeds since they create a significant drain on shelter resources even if they do not have high rates of euthanasia.
+
+### Limiting Focus to Specific Breeds
+
+First, I defined criteria for filtering breeds. Breeds are selected if:
+
+-   Breed makes up more than 10% over overall population, contributing to shelter overpopulation OR
+
+-   Breed has a statistically significant population percentage (greater than 1%) AND one or more of the following:
+
+    -   Adoption Rate - Lower than average adoption rate of 41.69%
+
+    -   Euthanasia Rate - Higher than average euthanasia rate of 14.18%
+
+    -   Length of Stay - Higher than average of 15 days
+
+Then I calculated population percentages:
+
+```{r}
+total_dog_count <- sum(unique_breeds$counts)
+unique_breeds <- unique_breeds %>% 
+  mutate(population_percentage = round((counts / total_dog_count) * 100, 2))
+```
+
+And limited the data set to breeds with a population larger than 1% of the population. This limited the number of breeds from 192 to only 15.
+
+```{r}
+filtered_breeds <- unique_breeds %>% filter(population_percentage >= 1.00)
+
+filtered_dogs <- shelter_dogs %>%
+  filter(primary_breed %in% filtered_breeds$primary_breed)
+```
+
+Then, I filter using my criteria for high risk dogs.
+
+```{r}
+risk_breeds <- filtered_breeds %>%
+  filter(
+    adoption_rate < 41.74 | 
+    euthanasia_rate > 14.35 |
+    population_percentage > 10 |
+    average_stay > 15
+    )
+print(risk_breeds)
+```
+
+I excluded those breeds which had low adoption rates that can be explained by high return to owner rates, along with low euthanasia rates and small population. These breeds are not part of my focus.
+
+```{r}
+risk_breeds <- risk_breeds %>% 
+  filter(
+    !(returned_to_owner_rate > 19.24 & euthanasia_rate < 14.35 & average_stay < 15)
+  )
+```
+
+*Final Filtering of Data Set:*
+
+```{r}
+risk_dogs <- shelter_dogs %>%
+  filter(primary_breed %in% risk_breeds$primary_breed)
+```
+
+**The final high-risk breeds list includes: bull terriers, german shepherds, chihuahuas, huskies, boxers, and rottweilers.**
+
+## Trends for High-Risk Breeds
+
+Now I will compare trends in intakes and outcomes for high risk breeds with those of the whole population.
+
+### Intakes
+
+Yearly
+
+```{r}
+yearly_risk_intakes <- risk_dogs %>%
+  group_by(intake_year) %>%
+  summarise(intake_count = n()) %>% 
+  filter(!(intake_year %in% c(2017, 2024))) %>%
+  arrange(intake_year)
+print(yearly_risk_intakes)
+```
+
+```{r risk intakes chart, cache=TRUE}
+ggplot(yearly_risk_intakes, aes(x = intake_year, y = intake_count)) +
+  geom_line(color = "blue") +
+  expand_limits(y = 0)
+  labs(title = "Total High Risk Intakes per Year", x = "Year", y = "Intake Count") +
+  theme_minimal()
+```
+
+Monthly
+
+```{r}
+monthly_risk_intakes <- risk_dogs %>%
+  group_by(intake_year, intake_month) %>%
+  summarise(intake_count = n()) %>% 
+  filter(!(intake_year %in% c(2017, 2024)))
+```
+
+```{r monthly risk intakes chart, cache=TRUE}
+ggplot(monthly_risk_intakes, aes(x = intake_month, y = intake_count, group = intake_year)) +
+  geom_line() +
+  facet_wrap(~ intake_year, scales = "free_x") +
+  labs(title = "Monthly Intake Trends for High Risk Breeds", x = "Month", y = "Count")
+```
+
+### Outcomes
+
+Yearly - All outcomes
+
+```{r}
+yearly_risk_outcomes <- risk_dogs %>%
+  group_by(outcome_year, outcome_type) %>%
+  summarise(outcome_count = n()) %>% 
+  filter(!(outcome_year %in% c(2017, 2024)))
+yearly_total_risk_outcomes <- yearly_risk_outcomes %>% 
+  group_by(outcome_year) %>% 
+  summarise(total_outcomes = sum(outcome_count)) %>% 
+  filter(!(outcome_year %in% c(2017, 2024)))
+```
+
+Yearly adoptions
+
+```{r}
+yearly_risk_adoptions <- yearly_risk_outcomes %>%
+  filter(outcome_type == "adopted") %>%
+  rename(adoption_count = outcome_count) %>% 
+   select(-outcome_type)
+print(yearly_risk_adoptions)
+```
+
+Yearly euthanasia
+
+```{r}
+yearly_risk_euthanasia <- yearly_risk_outcomes %>%
+  filter(outcome_type == "euthanized") %>%
+  rename(euthanasia_count = outcome_count) %>% 
+  select(-outcome_type)
+print(yearly_risk_euthanasia)
+```
+
+Yearly returns
+
+```{r}
+yearly_risk_returns <- yearly_risk_outcomes %>%
+  filter(outcome_type == "returned_to_owner") %>%
+  rename(return_count = outcome_count) %>% 
+  select(-outcome_type)
+print(yearly_risk_returns)
+```
+
+Yearly rescues
+
+```{r}
+yearly_risk_rescues <- yearly_risk_outcomes %>%
+  filter(outcome_type == "rescue") %>%
+  rename(rescue_count = outcome_count) %>% 
+  select(-outcome_type)
+print(yearly_risk_rescues)
+```
+
+Combined yearly rates
+
+```{r}
+yearly_risk_rates <- yearly_total_risk_outcomes %>%
+  left_join(yearly_risk_adoptions, by = "outcome_year") %>%
+  left_join(yearly_risk_euthanasia, by = "outcome_year") %>% 
+  left_join(yearly_risk_rescues, by = "outcome_year") %>% 
+  left_join(yearly_risk_returns, by = "outcome_year")
+yearly_risk_rates <- yearly_risk_rates %>%
+  mutate(
+    adoption_rate = (adoption_count / total_outcomes) * 100,
+    euthanasia_rate = (euthanasia_count / total_outcomes) * 100,
+    rescue_rate = (rescue_count / total_outcomes) * 100,
+    return_to_owner_rate = (return_count / total_outcomes) * 100
+  ) %>%
+  select(-adoption_count, -euthanasia_count, -rescue_count, -return_count)
+print(yearly_risk_rates)
+```
+
+Visualization
+
+```{r yearly risk chart, cache=TRUE}
+ggplot(yearly_risk_rates, aes(x = outcome_year)) + 
+  geom_line(aes(y = adoption_rate, color = "Adoption"), linewidth = 1) +
+  geom_line(aes(y = euthanasia_rate, color = "Euthanasia"), linewidth = 1) +
+  geom_line(aes(y = rescue_rate, color = "Rescue"), linewidth = 1) +
+  geom_line(aes(y = return_to_owner_rate, color = "Return to Owner"), linewidth = 1) +
+  scale_color_manual(values = c("Adoption" = "green", "Euthanasia" = "red", "Rescue" = "blue", "Return to Owner" = "orange")) +
+  labs(title = "Yearly Outcome Rates for High Risk 2018-2023",
+       x = "Years", y = "Rate (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+When the trends in outcome rates for high risk dogs are compared to trends in overall population, the following can be observed:
+
+-   While the overall population saw a stable adoption rate from 2022 to 2023, high risk dogs saw a decrease in adoptions.
+
+-   While both have seen an increase in euthanasia since 2021, rates or high risk breeds have increased more steeply.
+
+-   Rescue involvement has decreased for both the overall population and high risk population.
+
+Monthly - All Outcomes
+
+```{r}
+monthly_risk_outcomes <- risk_dogs %>%
+  group_by(outcome_month_year, outcome_type) %>%
+  summarise(outcome_count = n()) %>% 
+  filter(!grepl("2017|2024", outcome_month_year))
+monthly_total_risk_outcomes <- monthly_risk_outcomes %>% 
+  group_by(outcome_month_year) %>% 
+  summarise(total_outcomes = sum(outcome_count)) %>% 
+  filter(!grepl("2017|2024", outcome_month_year))
+```
+
+Monthly Adoptions
+
+```{r}
+monthly_risk_adoptions <- monthly_risk_outcomes %>%
+  filter(outcome_type == "adopted") %>%
+  rename(adoption_count = outcome_count) %>% 
+   select(-outcome_type)
+```
+
+Monthly Euthanasia
+
+```{r}
+monthly_risk_euthanasia <- monthly_risk_outcomes %>%
+  filter(outcome_type == "euthanized") %>%
+  rename(euthanasia_count = outcome_count) %>% 
+   select(-outcome_type)
+```
+
+Monthly Returns
+
+```{r}
+monthly_risk_returns <- monthly_risk_outcomes %>%
+  filter(outcome_type == "returned_to_owner") %>%
+  rename(return_count = outcome_count) %>% 
+   select(-outcome_type)
+```
+
+Monthly Rescues
+
+```{r}
+monthly_risk_rescues <- monthly_risk_outcomes %>%
+  filter(outcome_type == "rescue") %>%
+  rename(rescue_count = outcome_count) %>% 
+   select(-outcome_type)
+```
+
+Monthly Combined Rates
+
+```{r}
+monthly_risk_rates <- monthly_total_outcomes %>%
+  inner_join(monthly_risk_adoptions, by = c("outcome_month_year")) %>%
+  inner_join(monthly_risk_euthanasia, by = c("outcome_month_year")) %>%
+  inner_join(monthly_risk_returns, by = c("outcome_month_year")) %>%
+  inner_join(monthly_risk_rescues, by = c("outcome_month_year"))
+
+monthly_risk_rates <- monthly_risk_rates %>%
+  mutate(
+    adoption_rate = (adoption_count / total_outcomes) * 100,
+    euthanasia_rate = (euthanasia_count / total_outcomes) * 100,
+    rescue_rate = (rescue_count / total_outcomes) * 100,
+    return_to_owner_rate = (return_count / total_outcomes) * 100
+  ) %>%
+  select(-adoption_count, -euthanasia_count, -rescue_count, -return_count)
+```
+
+```{r}
+monthly_risk_rates$outcome_month_year <- parse_date_time(monthly_risk_rates$outcome_month_year, "my")
+```
+
+Monthly Visualization
+
+```{r monthly risk chart, cache=TRUE}
+ggplot(monthly_risk_rates, aes(x = outcome_month_year)) + 
+  geom_line(aes(y = adoption_rate, color = "Adoption"), linewidth = 1) +
+  geom_line(aes(y = euthanasia_rate, color = "Euthanasia"), linewidth = 1) +
+  geom_line(aes(y = rescue_rate, color = "Rescue"), linewidth = 1) +
+  geom_line(aes(y = return_to_owner_rate, color = "Return to Owner"), linewidth = 1) +
+  scale_color_manual(values = c("Adoption" = "green", "Euthanasia" = "red", "Rescue" = "blue", "Return to Owner" = "orange")) +
+  labs(title = "Monthly Outcome Rates for High Risk Breeds",
+       x = "Years", y = "Rate (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### Comparing High Risk with Overall Population
+
+Monthly
+
+```{r}
+compared_rates <- bind_rows(
+  monthly_outcome_rates %>% mutate(source = "Overall Population"),
+  monthly_risk_rates %>% mutate(source = "High-Risk Breeds")
+)
+compared_rates_long <- compared_rates %>% 
+  pivot_longer(cols = c(adoption_rate, euthanasia_rate, rescue_rate, return_to_owner_rate),
+               names_to = "outcome_type", values_to = "rate")
+compared_rates_long <- compared_rates_long %>%
+  mutate(outcome_month_year = as.Date(outcome_month_year))
+```
+
+```{r comparison chart, cache=TRUE}
+ggplot(compared_rates_long, aes(x = outcome_month_year, y = rate, color = source)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ outcome_type, scales = "free_y") +
+  labs(title = "Monthly Outcome Rates: Overall Shelter vs High-Risk Breeds",
+       x = "Month-Year", 
+       y = "Rate (%)",
+       color = "Group") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y")
+```
+
+Yearly
+
+```{r}
+yearly_compared_rates <- bind_rows(
+  yearly_outcome_rates %>% mutate(source = "Overall Population"),
+  yearly_risk_rates %>% mutate(source = "High-Risk Breeds")
+)
+yearly_rates_long <- yearly_compared_rates %>% 
+  pivot_longer(cols = c(adoption_rate, euthanasia_rate, rescue_rate, return_to_owner_rate),
+               names_to = "outcome_type", values_to = "rate")
+yearly_rates_long <- yearly_rates_long %>%
+  mutate(outcome_year = as.Date(outcome_year))
+```
+
+```{r yearly comparison chart, cache=TRUE}
+ggplot(yearly_rates_long, aes(x = outcome_year, y = rate, color = source)) +
+  geom_line(size = 1) +
+  facet_wrap(~ outcome_type, scales = "free_y") +
+  labs(title = "Yearly Outcome Rates: Overall Shelter vs High-Risk Breeds",
+       x = "Year", 
+       y = "Rate (%)",
+       color = "Group") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%b %Y")
+```
+
+## Results and Findings
+
+The following is a summary of my analysis findings:
+
+*All Los Angles County Shelters*
+
+-   Most intakes in shelters are strays. After strays, owner surrenders are the most common. These two types make up a majority of all intakes.
+
+-   Based on the data set, only around 42% of all dogs were adopted.
+
+-   Around 14 percent of dogs were euthanized, around 18% were sent to rescue shelters, and around 19% were returned to their original owners.
+
+-   The average amount of time spent in shelters is 15 days.
+
+-   Overall intake counts for all shelters peaked in 2019, normalized in 2020-2021, then increased in following years.
+
+    -   2018 and 2019 saw much higher than average monthly intakes
+
+    -   2020-2022 saw lower intakes
+
+    -   2023 saw slightly higher monthly intakes
+
+-   While intakes peaked in 2019, adoptions also peaked.
+
+-   **Adoptions were highest from 2022-2023 — overall, they are trending upwards!**
+
+-   **Unfortunately, euthanasia has also increased drastically from 2022-2023.**
+
+-   The number of dogs sent to rescues has decreased in recent years.
+
+*All Breeds Represented in Data Set*
+
+-   There are 197 primary breeds that have been through an LA County shelter since 2017.
+
+    -   A large number of breeds have only a few occurrences, but a small number of breeds have excessively large populations in shelters.
+
+        -   Only 5 make up \> 5% while 182 have less than 1%
+
+        -   The breeds with abnormally large populations will be included under the classification of "high-risk" breeds since they create a significant drain on shelter resources even if they do not have high rates of euthanasia.
+
+*High Risk Breeds*
+
+This project aims to identify those breeds that have excessive numbers in shelters, face low adoptions, and/or are at higher risk for euthanasia or lengthy stays (which can result in trauma and behavioral issues).
+
+The data set was filtered to isolate the following breeds:
+
+-   Makes up more than 10% over overall population, contributing to shelter overpopulation OR
+
+-   Has a statistically significant population percentage (greater than 1%) AND one or more of the following:
+
+    -   Adoption Rate - Lower than average adoption rate of 41.69%
+
+    -   Euthanasia Rate - Higher than average euthanasia rate of 14.18%
+
+    -   Length of Stay - Higher than average of 15 days
+
+The high risk breeds were determined to be
+
+1.  **Bull Terriers** (including Pit Bull Terriers and Staffordshire Bull Terriers)
+
+    -   Highest count across all shelters — 20,075 total. or 17% of data set
+
+    -   Adoption rate much lower than average at 34%
+
+    -   Extremely high euthanasia rate! Highest at 27%
+
+    -   Longer than average stay of 25 days
+
+2.  **German Shepherds**
+
+    -   Made up 15% of all population
+
+    -   Higher than average euthanasia rate of 18%
+
+    -   Longer than average stay of 19 days
+
+3.  **Chihuahuas**
+
+    -   Made up 13% of all population
+
+4.  **Siberian Huskies** (including Alaskan Huskies)
+
+    -   Made up 8% of all population
+
+    -   Longer than average stay of 17 days
+
+5.  **Boxers**
+
+    -   Adoption rate much lower than average at 36%
+
+    -   Longer than average stay of 17 days
+
+6.  **Rottweilers**
+
+    -   Adoption rate much lower than average at 36%
+
+    -   Extremely high euthanasia rate! Second highest at 27%
+
+    -   Longer than average stay of 17 days
+
+High-risk breed trends compared to overall population trends:
+
+-   While the overall population saw an increase in adoptions from 2022 to 2023, high-risk dogs saw a decrease in adoptions.
+
+-   While both have seen an increase in euthanasia since 2021, rates or high risk breeds have increased more steeply. Euthanasia rates are consistently higher for high-risk than for the overall population.
+
+-   Rescue involvement has decreased for both the overall population and high risk population.
+
+## Recommendations
+
+Based on this analysis, I recommend the following actions:
+
+-   **Targeted adoption campaigns for high-risk breeds.**
+    -   Developing breed-specific outreach and marketing campaigns can help highlight the positive qualities of these breeds.
+    -   Increasing public awareness and education combats negative stereotypes/preconceptions about breeds that hinder their adoption. It also allows for more successful dog ownership.
+    -   High-risk breeds should be highlighted at shelter adoption events.
+    -   Consider discounted or waived adoption fees for high-risk breeds.
+-   **Strengthen relationships with breed-specific rescue groups.**
+    -   Collaborate on media campaigns for breed education.
+    -   Send more high-risk dogs to rescues for adoption rather than euthanize them.
+        -   Rescues often have the expertise and resources to rehabilitate dogs and prepare them for adoption.
+-   **Manage shelter populations by reducing intakes.**
+    -   Strays and owner surrenders are two most common intakes.
+        -   Consider launching a low-cost or free micro-chipping program for dogs not adopted from shelters, to reduce the risk of these dogs ending up in shelters as strays.
+    -   Dogs surrendered by owners make up 19% of all intakes. Reducing this number would help lessen the drain on shelter resources.
+        -   Educating owners on breed specific care can reduce surrenders and returns.
+
+### Conclusion
+
+The ultimate goal is to increase positive outcomes (adoptions and rescues) while decreasing negative outcomes (euthanasia and long shelter stays) for the high-risk breeds identified in this project. By specifically dealing with the breeds that are prevalent and vulnerable, LA County shelters can better manage overpopulation and improve outcomes for all dogs in their care.
+
+## Limitations
+
+-   Scope: This project will limit it's focus to dogs (excluding cats from the original data) in the Los Angeles area only. The data set used contains animal intake records for LA County Shelters only and is provided by the city's open data website. This analysis will not include data from City of LA animal shelters. While the City of LA does have some adoption data available publicly, it is not comprehensive and lacks data on breeds. LA county's database is cleaner, more complete, and covers a larger time period/area, so it was the sole focus of this analysis.
+-   No age or gender data included in data set.
+
+## References
+
+1.  [PawStats Data Source Info](https://services.arcgis.com/RmCCgQtiZLDCtblq/arcgis/rest/services/Animal_Care_PawStats/FeatureServer/0)
+2.  [American Kennel Club Official Dog Breed List](https://www.akc.org/dog-breed "AKC Dog Breeds")
