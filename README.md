@@ -1,5 +1,8 @@
 # LA Shelter Analysis: Improving Outcomes for High-Risk Dog Breeds
 
+Click here to download the full project documentation as a PDF file: [ShelterAnalysisDocumentation.pdf](https://github.com/user-attachments/files/17963021/ShelterAnalysisDocumentation.pdf)
+
+
 ## Table of Contents
 
 - [Project Overview](#project-overview)
